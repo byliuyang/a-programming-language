@@ -1,10 +1,15 @@
 #lang plai-typed
 
-;; starter file for the extended basic interpreter assignment
-; want static scope
+;; starter file for the testing mutation assignment
+
+; You are NOT EXPECTED TO EDIT THIS FILE.  This file gives you a stub for
+; running your programs with the same types as our autograding script expects.
+; You are not expected to fill in the interpreter, desugar, etc for this assignment.
+
+(require (typed-in racket/sandbox [call-with-limits : (number boolean (-> 'a) -> 'a)]))
 
 ;---------------------------------------------------------------------------------
-;; surface syntax and parser : you should NOT need to edit this section
+;; surface syntax and parser 
 
 ; type used to capture a with-binding
 (define-type DefS
@@ -19,8 +24,13 @@
   [idS (i : symbol)]
   [appS (f : ExprS) (args : (listof ExprS))]
   [if0S (c : ExprS) (t : ExprS) (e : ExprS)]
-  [funS (params : (listof symbol)) (body : ExprS)]
+  [lamS (params : (listof symbol)) (body : ExprS)]
   [withS (bindings : (listof DefS)) (body : ExprS)]
+  [boxS (arg : ExprS)]
+  [unboxS (b : ExprS)]
+  [setboxS (b : ExprS) (v : ExprS)]
+  [seqS (e1 : ExprS) (e2 : ExprS)]
+  [setS (var : symbol) (val : ExprS)]
   )
 
 ; parses s-expressions into surface syntax
@@ -36,179 +46,148 @@
                 [(*) (multS (parse (second sl)) (parse (third sl)))]
                 [(-) (bminusS (parse (second sl)) (parse (third sl)))]
                 [(if0) (if0S (parse (second sl)) (parse (third sl)) (parse (fourth sl)))]
-                [(fun) (funS (map s-exp->symbol (s-exp->list (second sl))) 
+                [(fun) (lamS (map s-exp->symbol (s-exp->list (second sl))) 
                                 (parse (third sl)))]
                 [(with) (withS (map (lambda (b) 
                                       (let ([bl (s-exp->list b)])
                                         (defS (s-exp->symbol (first bl)) (parse (second bl)))))
                                     (s-exp->list (second sl)))
                                (parse (third sl)))]
+                [(box) (boxS (parse (second sl)))]
+                [(unbox) (unboxS (parse (second sl)))]
+                [(setbox) (setboxS (parse (second sl)) (parse (third sl)))]
+                [(seq) (seqS (parse (second sl)) (parse (third sl)))]
+                [(set) (setS (s-exp->symbol (second sl)) (parse (third sl)))]
                 [else ;; must be a function call using function name
                  (appS (idS (s-exp->symbol (first sl)))
                        (map parse (rest sl)))])]
              [(s-exp-list? (first sl)) ;; function call with complex expression in function position
               (appS (parse (first sl))
                     (map parse (rest sl)))]
+             [(s-exp-number? (first sl)) ;; type violation of using number as function but fits grammar
+              (appS (parse (first sl)) (map parse (rest sl)))]
              [else (error 'parse "expected symbol or list after parenthesis")]))]
     [else (error 'parse "unexpected input format")]))
-     
+
 ;---------------------------------------------------------------------------------
-;; abstract syntax and desugar
-     
+;; ExprC
+
 (define-type ExprC
   [numC (n : number)]
   [plusC (l : ExprC) (r : ExprC)]
   [multC (l : ExprC) (r : ExprC)]
   [idC (i : symbol)]
-  [appC (f : ExprC) (arg : (listof ExprC))]
+  [appC (f : ExprC) (args : (listof ExprC))]
   [if0C (c : ExprC) (t : ExprC) (e : ExprC)]
-  [funC (params : (listof symbol)) (body : ExprC)])
-
-;; desugar -- returning a default/dummy value so file can be run
-(define (desugar [e : ExprS]) : ExprC
-  (type-case ExprS e
-    [numS (n) (numC n)]
-    [plusS (l r) (plusC
-                  (desugar l)
-                  (desugar r))]
-    [bminusS (l r) (plusC
-                    (desugar l)
-                    (multC
-                     (numC -1)
-                     (desugar r)))]
-    [multS (l r) (multC
-                  (desugar l)
-                  (desugar r))]
-    [idS (i) (idC i)]
-    [appS (f a) (appC
-                 (desugar f)
-                 (map
-                  (lambda (arg) (desugar arg))
-                  a))]
-    [if0S (c t e) (if0C (desugar c) (desugar t) (desugar e))]
-    [funS (p b) (funC p (desugar b))]
-    [withS (bindings body) (appC
-                            (funC
-                             (map (lambda (b) (defS-name b)) bindings) (desugar body))
-                            (map (lambda (b) (desugar (defS-val b))) bindings))]))
-
-;---------------------------------------------------------------------------------
-;; output values
-
-(define-type Value
-  [numV (n : number)]
-  [closV (args : (listof symbol)) (body : ExprC) (env : Env)])
+  [lamC (params : (listof symbol)) (body : ExprC)]
+  [boxC (arg : ExprC)]
+  [unboxC (b : ExprC)]
+  [setboxC (b : ExprC) (val : ExprC)]
+  [seqC (e1 : ExprC) (e2 : ExprC)]
+  [setC (var : symbol) (val : ExprC)]
+  )
 
 ;---------------------------------------------------------------------------------
 ;; Environments
 
-;; binding an identifier to a value
 (define-type Binding
-  [bind (name : symbol) (val : Value)])
- 
+  [bind (name : symbol) (loc : Location)])
 (define-type-alias Env (listof Binding))
-(define mt-env empty)
-(define extend-env append)
-; Store
 (define-type-alias Location number)
-(define-type Store
-  [cell (loc : Location) (val : Value)])
-
-; Result
-(define-type Result
-  [v*s (v : Value) (s : Store)])
-
-; Bind values to parameters
-(define (bind-vals [params : (listof symbol)] [vals : (listof Value)]) : Env
-      (cond
-        [(empty? params) empty] ; all expressions are binded to parameters
-        [else
-         (if (member 
-              (first params)
-              (rest params)) ; Check whether is repeated
-             (error 'bind-vals "multiple")
-             (cons
-              (bind
-               (first params)
-               (first vals)) ; bind parameter to value
-              (bind-vals ; bind the rest of params to values
-               (rest params)
-               (rest vals))))]))
-
-; Number addition
-(define (num+ [l : Value] [r : Value]) : Value
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (+ (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "at least one argument was not a number")]))
-
-; Number multiplication
-(define (num* [l : Value] [r : Value]) : Value
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (* (numV-n l) (numV-n r)))]
-    [else
-     (error 'num* "at least one argument was not a number")]))
-
-; lookup symbol from environment
-(define (lookup (for : symbol) (env : Env)) : Value
-  (cond
-    [(empty? env) (error 'lookup "unbound")]
-    [else (cond
-       [(symbol=? for (bind-name (first env))) (bind-val (first env))]
-       [else (lookup for (rest env))])]))
-
-; Binary operator
-(define (binary-opt ([operator : ][l : ExprC] [r : ExprC]))
 
 ;---------------------------------------------------------------------------------
-;; interp -- returning a default/dummy value so file can be run
-(define (interp [e : ExprC] [env : Env] [sto : Store]) : Result
-  (type-case ExprC e
-    [numC (n) (numV n)] ; number
-    [plusC (l r) (num+ (interp l env sto) (interp r env sto))] ; plus
-    [multC (l r) (num* (interp l env sto) (interp r env sto))] ; multiply
-    [idC (i) (lookup i env)] ; look up value for id
-    [appC (f a)
-          (let
-              ([fd (interp f env)]) ; Interprete the function 
-            (interp
-             (closV-body fd) ; Interprete function body
-             (extend-env
-              (bind-vals ; binding arguments to parameters
-               (closV-args fd) 
-               (map (lambda (expr) (interp expr env)) a)) ; Eager semantics
-              (extend-env ; static scope
-               (closV-env fd)
-               env))))]
-    [if0C (c t e) (let ([n (interp c env)])
-                    (cond
-                      [(numV? n) ; condition is number
-                       (cond
-                         [(= (numV-n n) 0) ; condition is 0
-                          (interp t env)] ; Then
-                         [else ; Else
-                          (interp e env)])]
-                      [else (error 'interp "type") ; Not number
-                            ]))]
-    [funC (p b)
-          (closV p b env) ; static scope
-          ]))
+;; output values
+
+(define-type Value                                                                                                                             
+  [numV (n : number)]                                                                                                                          
+  [boxV (l : Location)]                                                                                                                        
+  [closV (params : (listof symbol)) (body : ExprC) (env : Env)])   
 
 ;---------------------------------------------------------------------------------
 ;; API for running programs
 
-; evaluates a program starting with a pre-populated environment
-; (this can be helpful in testing)
-(define (run/env sexp env)
-  (interp (desugar (parse sexp)) env))
+; running functions with timeout to trap infinite loops
+(define (run [sexp : s-expression]) : Value
+  (let ([p (parse sexp)])
+    (call-with-limits 
+     10 #f
+     (lambda () (numV 0)))))
 
-; evaluates a program in the empty environment
-(define (run sexp)
-  (run/env sexp mt-env))
-
-(run '(with ([b (box 5)])
-            (+ (seq (setbox b 8)
-                    (unbox b))
+; 1) Test for mutation in binary operator
+(test (run '(with([b (box 0)])
+              (+
+               (seq (setbox b 10) 1)
                (unbox b))))
+      (numV 11))
+
+(test (run '(with([b (box 0)])
+              (*
+               (seq (setbox b 10) 1)
+               (unbox b))))
+      (numV 10))
+
+; 2) Test for mutation with static scope
+(test (run '(with([b (box 0)]
+                 [f (fun (x) (+ (unbox b) x))])
+              (seq (setbox b 2)
+                   (f 1))))
+      (numV 3))
+
+; 3) Test for nested mutations
+(test (run '(with([b (box 2)]
+                 [f (fun
+                     (x y)
+                      (if0 (unbox b)
+                           (+ x (unbox b))
+                           (seq
+                            (setbox b y)
+                            (* x (unbox b))
+                            )))])
+              (+ (f 1 0) (f 7 2))))
+      (numV 7))
+
+; 4) Chained object
+(test (run '(with ([b1 (box 1)])
+                  (with ([b2 b1])
+                        (with ([b3 b2])
+                              (seq (setbox b1 2)
+                                   (unbox b3))))))
+      (numV 2))
+
+; 5) setbox on number
+(test/exn (run '(with [(b 1)]
+                  (setbox b 2)))
+          "type")
+; 6) unbox on number
+(test/exn (run '(with [(b 1)]
+                  (unbox b 2)))
+          "type")
+
+; 7) set static scope
+(test (run '(with [(b 1)]
+              (with ([f (fun (x) (+ x b))])
+                    (seq
+                     (set b 10)
+                     (f 2)))))
+      (numV 3))
+; 8) set chained static scope
+(test (run '(with [(b1 1)]
+                  (with ([b2 b1])
+                    (seq
+                     (set b1 10)
+                     b2))))
+      (numV 1))
+
+; 9) setbox chained
+(test (run '(with [(b1 (box 1))]
+                      (with ([b2 b1])
+                        (seq
+                     (set b1 (box 2))
+                     (unbox b2)))))
+          (numV 1))
+
+; 10) setbox on argument 
+(test (run '(with ([f (fun (x) (seq (set x (+ x x))
+                                    x))])
+                  (+ (f 1) (f 2))))
+      (numV 6))
