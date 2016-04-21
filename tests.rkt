@@ -1,4 +1,80 @@
 #lang plai-typed
+; 1) Test for mutation in binary operator
+(test (run '(with([b (box 0)])
+              (* (seq (setbox b 10)
+                        2)
+                 (+ (seq (setbox b
+                                     (+ (unbox b) 10))
+                           1)
+                    (unbox b)))))
+      (numV 42))
+
+; 2) Test for mutation with static scope
+(test (run '(with([b (box 0)])
+              (with ([f (fun (x) (+ (unbox b) x))])
+                (seq (setbox b 2)
+                       (f 1)))))
+      (numV 3))
+
+; 3) Test for nested mutations
+(test (run '(with([b (box 2)])
+              (with ([f (fun
+                           (x y)
+                         (if0 (unbox b)
+                              (+ x (unbox b))
+                              (seq
+                                (setbox b y)
+                                (* x (unbox b))
+                                )))])
+                (+ (f 1 0) (f 7 2)))))
+      (numV 7))
+
+; 4) Chained object
+(test (run '(with ([b1 (box 1)])
+              (with ([b2 b1])
+                (with ([b3 b2])
+                  (seq (setbox b1 2)
+                         (unbox b3))))))
+      (numV 2))
+
+; 5) setbox on number
+(test/exn (run '(with [(b 1)]
+                  (setbox b 2)))
+          "type")
+; 6) unbox on number
+(test/exn (run '(with [(b 1)]
+                  (unbox b 2)))
+          "type")
+
+; 7) set static scope
+(test (run '(with [(b 1)]
+              (with ([f (fun (x) (+ x b))])
+                (seq
+                  (set b 10)
+                  (f 2)))))
+      (numV 12))
+; 8) set chained static scope
+(test (run '(with [(b1 1)]
+              (with ([b2 b1])
+                (seq
+                  (set b1 10)
+                  b2))))
+      (numV 1))
+
+; 9) set chained
+(test (run '(with [(b1 (box 1))]
+              (with ([b2 b1])
+                (seq
+                  (set b1 (box 2))
+                     (unbox b2)))))
+      (numV 1))
+
+; 10) set on argument 
+(test (run '(with ([f (fun (x) (seq (set x (+ x x))
+                                        x))])
+              (+ (f 1) (f 2))))
+      (numV 6))
+; ---------------------------------
 
 ; Tests for Arithmetics
 ; Test for plus
@@ -59,8 +135,7 @@
 
 (test (run '(with ([x 3])
                   (with
-                   ([f
-                     (fun (y) (+ x y))])
+                   ([f (fun (y) (+ x y))])
                    (f 6))))
       (numV 9))
 ; Tests for nearest env
@@ -100,12 +175,12 @@
 
 ; Tests for function
 (test  (run '((fun
-               ()
-               (+ 1 2))))
+               (_)
+               (+ 1 2)) 2))
        (numV 3))
 (test  (run '((fun (x y) (+ x y)) 1 2))
        (numV 3))
-; Tests for nested lambda
+; Tests for nested fun
 (test  (run '((fun
                (x)
                ((fun (y) (+ x y))
@@ -121,6 +196,6 @@
               1))
        (numV 4))
 ; Test for unbound error
-(test/exn  (run '((fun (y) (+ x y)) 1 2)) "unbound")
+(test/exn  (run '((fun (y) (+ x y)) 1)) "unbound")
 ; Test for repeated parameter
 (test/exn  (run '((fun (x x) (+ x x)) 1 2)) "multiple")
